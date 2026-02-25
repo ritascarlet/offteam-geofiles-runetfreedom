@@ -1,0 +1,87 @@
+name: Check Geodata Rules
+
+on:
+  # Запуск по расписанию — каждые 6 часов (синхронно с обновлением runetfreedom)
+  schedule:
+    - cron: "30 */6 * * *"
+
+  # Ручной запуск
+  workflow_dispatch:
+
+  # При изменении конфига или скрипта
+  push:
+    paths:
+      - "scripts/check_geodata.py"
+      - "scripts/required_rules.json"
+      - ".github/workflows/check-geodata.yml"
+
+  pull_request:
+    paths:
+      - "scripts/check_geodata.py"
+      - "scripts/required_rules.json"
+
+jobs:
+  check-geodata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install protobuf
+
+      - name: Run geodata check
+        run: python scripts/check_geodata.py --config scripts/required_rules.json
+
+      # ── Оповещение через GitHub Issue при ошибке ──
+      - name: Create GitHub Issue on failure
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `🚨 Geodata check failed — ${new Date().toISOString().slice(0, 10)}`;
+            const body = [
+              '## Geodata rules check failed',
+              '',
+              'One or more required geosite/geoip tags are missing from the upstream .dat files.',
+              '',
+              `**Run:** [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              '',
+              'Please check the workflow logs for details and update `scripts/required_rules.json` or investigate upstream changes.',
+            ].join('\n');
+
+            // Don't create duplicate issues
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'geodata-alert',
+              per_page: 5,
+            });
+
+            if (issues.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['geodata-alert'],
+              });
+              console.log('Issue created');
+            } else {
+              // Add comment to existing issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues[0].number,
+                body: `⚠️ Check failed again on ${new Date().toISOString()}\n\n[Run #${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              });
+              console.log('Comment added to existing issue #' + issues[0].number);
+            }
