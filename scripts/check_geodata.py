@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-check_geodata.py — Скачивает geosite.dat / geoip.dat и проверяет
-наличие всех требуемых категорий (country_code / tags).
+check_geodata.py — Downloads geosite.dat / geoip.dat, validates required tags,
+and saves files to --output-dir for release if all checks pass.
 
-Конфигурация: required_rules.json рядом со скриптом (или путь через --config).
-Выход: 0 если всё ок, 1 если есть отсутствующие теги.
+Exit 0 = all checks passed, files ready for release.
+Exit 1 = missing tags or download failure.
 """
 
 import argparse
@@ -12,23 +12,21 @@ import json
 import os
 import sys
 import urllib.request
-import tempfile
 from pathlib import Path
 
-# ─── Protobuf runtime descriptors (no protoc needed) ────────────────────────
 from google.protobuf import descriptor_pb2 as _dpb
 from google.protobuf import descriptor_pool as _pool
 from google.protobuf import message_factory as _mf
 
 
 def _build_protobuf_classes():
-    """Build GeoSiteList and GeoIPList message classes at runtime."""
+    """Build GeoSiteList and GeoIPList message classes at runtime (no protoc needed)."""
     fp = _dpb.FileDescriptorProto()
     fp.name = "geodata.proto"
     fp.package = "geodata"
     fp.syntax = "proto3"
 
-    # GeoSite  (we only need country_code — field 1)
+    # GeoSite (only country_code — field 1)
     m = fp.message_type.add()
     m.name = "GeoSite"
     f = m.field.add()
@@ -45,7 +43,7 @@ def _build_protobuf_classes():
     f.label = _dpb.FieldDescriptorProto.LABEL_REPEATED
     f.type_name = ".geodata.GeoSite"
 
-    # GeoIP  (we only need country_code — field 1)
+    # GeoIP (only country_code — field 1)
     m = fp.message_type.add()
     m.name = "GeoIP"
     f = m.field.add()
@@ -64,23 +62,15 @@ def _build_protobuf_classes():
 
     pool = _pool.DescriptorPool()
     pool.Add(fp)
-
-    GeoSiteList = _mf.GetMessageClass(
-        pool.FindMessageTypeByName("geodata.GeoSiteList")
-    )
-    GeoIPList = _mf.GetMessageClass(
-        pool.FindMessageTypeByName("geodata.GeoIPList")
-    )
+    GeoSiteList = _mf.GetMessageClass(pool.FindMessageTypeByName("geodata.GeoSiteList"))
+    GeoIPList = _mf.GetMessageClass(pool.FindMessageTypeByName("geodata.GeoIPList"))
     return GeoSiteList, GeoIPList
 
 
 GeoSiteList, GeoIPList = _build_protobuf_classes()
 
 
-# ─── Helpers ─────────────────────────────────────────────────────────────────
-
 def download_file(url: str, dest: str) -> None:
-    """Download a file following redirects."""
     print(f"  ⬇  Downloading {url}")
     req = urllib.request.Request(url, headers={"User-Agent": "geodata-checker/1.0"})
     with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as out:
@@ -91,7 +81,6 @@ def download_file(url: str, dest: str) -> None:
 
 
 def extract_tags_geosite(path: str) -> set[str]:
-    """Parse geosite.dat and return the set of country_code values (lowercased)."""
     data = Path(path).read_bytes()
     msg = GeoSiteList()
     msg.ParseFromString(data)
@@ -99,116 +88,113 @@ def extract_tags_geosite(path: str) -> set[str]:
 
 
 def extract_tags_geoip(path: str) -> set[str]:
-    """Parse geoip.dat and return the set of country_code values (lowercased)."""
     data = Path(path).read_bytes()
     msg = GeoIPList()
     msg.ParseFromString(data)
     return {entry.country_code.lower() for entry in msg.entry}
 
 
-# ─── Main ────────────────────────────────────────────────────────────────────
-
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Check geosite/geoip .dat files for required tags")
-    parser.add_argument(
-        "--config",
-        default=os.path.join(os.path.dirname(__file__), "required_rules.json"),
-        help="Path to required_rules.json",
-    )
+    parser = argparse.ArgumentParser(description="Check and download geosite/geoip .dat files")
+    parser.add_argument("--config", default=os.path.join(os.path.dirname(__file__), "required_rules.json"))
+    parser.add_argument("--output-dir", default="./release-assets", help="Directory to save validated .dat files")
     args = parser.parse_args()
 
     with open(args.config) as f:
         config = json.load(f)
 
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     all_ok = True
     missing_report: list[str] = []
 
-    with tempfile.TemporaryDirectory(prefix="geodata_check_") as tmpdir:
+    # Check geosite files
+    for filename, spec in config.get("geosite_files", {}).items():
+        url = spec["url"]
+        required = {t.lower() for t in spec["required_tags"]}
+        dest = output_dir / filename
 
-        # ── Check geosite files ──────────────────────────────────────────
-        for filename, spec in config.get("geosite_files", {}).items():
-            url = spec["url"]
-            required = {t.lower() for t in spec["required_tags"]}
-            dest = os.path.join(tmpdir, filename)
+        print(f"\n{'='*60}")
+        print(f"📄 Checking geosite: {filename}")
+        print(f"{'='*60}")
 
-            print(f"\n{'='*60}")
-            print(f"📄 Checking geosite: {filename}")
-            print(f"{'='*60}")
+        try:
+            download_file(url, str(dest))
+            available = extract_tags_geosite(str(dest))
+        except Exception as e:
+            msg = f"❌ FAILED to download/parse {filename}: {e}"
+            print(msg)
+            missing_report.append(msg)
+            all_ok = False
+            continue
 
-            try:
-                download_file(url, dest)
-                available = extract_tags_geosite(dest)
-            except Exception as e:
-                msg = f"❌ FAILED to download/parse {filename}: {e}"
-                print(msg)
-                missing_report.append(msg)
-                all_ok = False
-                continue
+        print(f"  📊 Total tags in file: {len(available)}")
+        missing = required - available
+        found = required & available
 
-            print(f"  📊 Total tags in file: {len(available)}")
-            missing = required - available
-            found = required & available
+        for tag in sorted(found):
+            print(f"  ✅ {tag}")
+        for tag in sorted(missing):
+            print(f"  ❌ MISSING: {tag}")
+            missing_report.append(f"{filename}: missing tag '{tag}'")
 
-            for tag in sorted(found):
-                print(f"  ✅ {tag}")
-            for tag in sorted(missing):
-                print(f"  ❌ MISSING: {tag}")
-                missing_report.append(f"{filename}: missing tag '{tag}'")
+        if missing:
+            all_ok = False
+            dest.unlink(missing_ok=True)  # Don't keep invalid files
 
-            if missing:
-                all_ok = False
+    # Check geoip files
+    for filename, spec in config.get("geoip_files", {}).items():
+        url = spec["url"]
+        required = {t.lower() for t in spec["required_tags"]}
+        dest = output_dir / filename
 
-        # ── Check geoip files ────────────────────────────────────────────
-        for filename, spec in config.get("geoip_files", {}).items():
-            url = spec["url"]
-            required = {t.lower() for t in spec["required_tags"]}
-            dest = os.path.join(tmpdir, filename)
+        print(f"\n{'='*60}")
+        print(f"📄 Checking geoip: {filename}")
+        print(f"{'='*60}")
 
-            print(f"\n{'='*60}")
-            print(f"📄 Checking geoip: {filename}")
-            print(f"{'='*60}")
+        try:
+            download_file(url, str(dest))
+            available = extract_tags_geoip(str(dest))
+        except Exception as e:
+            msg = f"❌ FAILED to download/parse {filename}: {e}"
+            print(msg)
+            missing_report.append(msg)
+            all_ok = False
+            continue
 
-            try:
-                download_file(url, dest)
-                available = extract_tags_geoip(dest)
-            except Exception as e:
-                msg = f"❌ FAILED to download/parse {filename}: {e}"
-                print(msg)
-                missing_report.append(msg)
-                all_ok = False
-                continue
+        print(f"  📊 Total tags in file: {len(available)}")
+        missing = required - available
+        found = required & available
 
-            print(f"  📊 Total tags in file: {len(available)}")
-            missing = required - available
-            found = required & available
+        for tag in sorted(found):
+            print(f"  ✅ {tag}")
+        for tag in sorted(missing):
+            print(f"  ❌ MISSING: {tag}")
+            missing_report.append(f"{filename}: missing tag '{tag}'")
 
-            for tag in sorted(found):
-                print(f"  ✅ {tag}")
-            for tag in sorted(missing):
-                print(f"  ❌ MISSING: {tag}")
-                missing_report.append(f"{filename}: missing tag '{tag}'")
+        if missing:
+            all_ok = False
+            dest.unlink(missing_ok=True)
 
-            if missing:
-                all_ok = False
-
-    # ── Summary ──────────────────────────────────────────────────────────
+    # Summary
     print(f"\n{'='*60}")
     if all_ok:
-        print("🎉 ALL CHECKS PASSED — all required tags are present.")
+        print("🎉 ALL CHECKS PASSED — files saved to release-assets/")
+        print(f"   Files ready for release:")
+        for f in sorted(output_dir.iterdir()):
+            print(f"   📦 {f.name} ({f.stat().st_size / (1024*1024):.1f} MB)")
     else:
         print("🚨 CHECKS FAILED — missing tags detected:")
         for line in missing_report:
             print(f"   • {line}")
 
-        # Write GitHub Actions summary if available
         summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary_path:
             with open(summary_path, "a") as sf:
                 sf.write("## 🚨 Geodata Check Failed\n\n")
-                sf.write("The following required tags are missing:\n\n")
                 for line in missing_report:
                     sf.write(f"- `{line}`\n")
-                sf.write("\n")
 
     print(f"{'='*60}")
     return 0 if all_ok else 1

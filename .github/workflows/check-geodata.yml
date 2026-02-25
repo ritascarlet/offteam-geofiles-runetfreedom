@@ -1,29 +1,21 @@
-name: Check Geodata Rules
+name: Check & Release Geodata
 
 on:
-  # Запуск по расписанию — каждые 6 часов (синхронно с обновлением runetfreedom)
   schedule:
     - cron: "30 */6 * * *"
-
-  # Ручной запуск
   workflow_dispatch:
-
-  # При изменении конфига или скрипта
   push:
     paths:
-      - "scripts/check_geodata.py"
-      - "scripts/required_rules.json"
+      - "scripts/**"
       - ".github/workflows/check-geodata.yml"
 
-  pull_request:
-    paths:
-      - "scripts/check_geodata.py"
-      - "scripts/required_rules.json"
-
 jobs:
-  check-geodata:
+  check-and-release:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
 
     steps:
       - name: Checkout repository
@@ -37,10 +29,35 @@ jobs:
       - name: Install dependencies
         run: pip install protobuf
 
-      - name: Run geodata check
-        run: python scripts/check_geodata.py --config scripts/required_rules.json
+      - name: Download and validate geodata files
+        run: python scripts/check_geodata.py --config scripts/required_rules.json --output-dir ./release-assets
 
-      # ── Оповещение через GitHub Issue при ошибке ──
+      - name: Generate release tag
+        id: tag
+        run: echo "tag=$(date +'%Y%m%d%H%M')" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "Geodata ${{ steps.tag.outputs.tag }}"
+          body: |
+            Автоматический релиз проверенных geo-файлов.
+
+            **Источник:** [runetfreedom/russia-v2ray-rules-dat](https://github.com/runetfreedom/russia-v2ray-rules-dat)
+
+            **Проверенные правила (geosite):**
+            - `ru-available-only-inside` ✅
+            - `category-ru` ✅
+
+            **Проверенные правила (geoip):**
+            - `ru-blocked` ✅
+            - `private` ✅
+          files: |
+            release-assets/geosite_RU.dat
+            release-assets/geoip_RU.dat
+
+      # Alert on failure
       - name: Create GitHub Issue on failure
         if: failure() && github.event_name == 'schedule'
         uses: actions/github-script@v7
@@ -48,16 +65,14 @@ jobs:
           script: |
             const title = `🚨 Geodata check failed — ${new Date().toISOString().slice(0, 10)}`;
             const body = [
-              '## Geodata rules check failed',
+              '## Geodata validation failed',
               '',
-              'One or more required geosite/geoip tags are missing from the upstream .dat files.',
+              'Required geosite/geoip tags are missing from upstream .dat files.',
+              'Release was **NOT** created.',
               '',
               `**Run:** [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
-              '',
-              'Please check the workflow logs for details and update `scripts/required_rules.json` or investigate upstream changes.',
             ].join('\n');
 
-            // Don't create duplicate issues
             const { data: issues } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -74,14 +89,11 @@ jobs:
                 body,
                 labels: ['geodata-alert'],
               });
-              console.log('Issue created');
             } else {
-              // Add comment to existing issue
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: issues[0].number,
-                body: `⚠️ Check failed again on ${new Date().toISOString()}\n\n[Run #${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+                body: `⚠️ Failed again: ${new Date().toISOString()}\n[Run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
               });
-              console.log('Comment added to existing issue #' + issues[0].number);
             }

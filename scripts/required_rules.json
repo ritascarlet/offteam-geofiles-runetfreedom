@@ -1,29 +1,14 @@
 {
   "geosite_files": {
     "geosite_RU.dat": {
-      "url": "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat",
-      "required_tags": [
-        "ru-available-only-inside",
-        "ru-blocked",
-        "ru-blocked-all",
-        "google",
-        "discord",
-        "youtube",
-        "twitter",
-        "meta",
-        "openai"
-      ]
+      "url": "https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat",
+      "required_tags": ["ru-available-only-inside", "category-ru"]
     }
   },
   "geoip_files": {
     "geoip_RU.dat": {
-      "url": "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geoip.dat",
-      "required_tags": [
-        "ru-blocked",
-        "ru-blocked-community",
-        "re-filter",
-        "private"
-      ]
+      "url": "https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geoip.dat",
+      "required_tags": ["ru-blocked", "private"]
     }
   }
 }
